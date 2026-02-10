@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+
+# Ignore user photos but keep placeholders
+photos/*
+!photos/placeholder-*.jpg

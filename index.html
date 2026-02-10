@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Photo Frame">
+  <title>Photo Frame</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      -webkit-user-select: none;
+      user-select: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      -webkit-touch-callout: none;
+      -webkit-text-size-adjust: none;
+      touch-action: none;
+    }
+
+    .slideshow {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+
+    .slide {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      -webkit-transition: opacity 1.5s ease-in-out;
+      transition: opacity 1.5s ease-in-out;
+    }
+
+    .slide.active {
+      opacity: 1;
+    }
+
+    .slide img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      -webkit-object-fit: contain;
+    }
+
+    /* Tap feedback */
+    .tap-feedback {
+      position: absolute;
+      top: 50%;
+      -webkit-transform: translateY(-50%);
+      transform: translateY(-50%);
+      padding: 12px 20px;
+      background: rgba(0, 0, 0, 0.6);
+      color: rgba(255, 255, 255, 0.9);
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      font-weight: 500;
+      border-radius: 10px;
+      z-index: 20;
+      pointer-events: none;
+      opacity: 0;
+      -webkit-transition: opacity 0.3s ease;
+      transition: opacity 0.3s ease;
+    }
+
+    .tap-feedback.show {
+      opacity: 1;
+    }
+
+    .tap-feedback.left {
+      left: 20px;
+    }
+
+    .tap-feedback.right {
+      right: 20px;
+    }
+
+    .tap-feedback .arrow {
+      font-size: 18px;
+      margin: 0 4px;
+    }
+
+    /* Clock overlay */
+    .clock {
+      position: absolute;
+      bottom: 30px;
+      right: 30px;
+      color: rgba(255, 255, 255, 0.7);
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      font-size: 24px;
+      font-weight: 300;
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* Loading state */
+    .loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      -webkit-transform: translate(-50%, -50%);
+      transform: translate(-50%, -50%);
+      color: #666;
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      font-size: 18px;
+    }
+
+    /* Settings panel */
+    .settings-toggle {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 40px;
+      height: 40px;
+      z-index: 100;
+      opacity: 0;
+    }
+
+    .settings {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.9);
+      z-index: 50;
+      padding: 40px 30px;
+      color: #fff;
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .settings.visible {
+      display: block;
+    }
+
+    .settings h2 {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 24px;
+    }
+
+    .settings label {
+      display: block;
+      font-size: 16px;
+      margin-bottom: 6px;
+      color: #aaa;
+    }
+
+    .settings select,
+    .settings input[type="number"] {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 20px;
+      font-size: 16px;
+      background: #222;
+      color: #fff;
+      border: 1px solid #444;
+      border-radius: 8px;
+      -webkit-appearance: none;
+    }
+
+    .settings .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      font-size: 16px;
+      background: #0a84ff;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-right: 10px;
+    }
+
+    .settings .btn-close {
+      background: #333;
+    }
+
+    .settings .info {
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid #333;
+      font-size: 14px;
+      color: #666;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="slideshow" id="slideshow">
+    <div class="loading" id="loading">Loading photos...</div>
+  </div>
+
+  <div class="clock" id="clock"></div>
+
+  <div class="tap-feedback left" id="feedbackLeft"><span class="arrow">&#9664;</span> Previous</div>
+  <div class="tap-feedback right" id="feedbackRight">Next <span class="arrow">&#9654;</span></div>
+
+  <!-- Invisible tap target for settings -->
+  <div class="settings-toggle" id="settingsToggle"></div>
+
+  <div class="settings" id="settings">
+    <h2>Photo Frame Settings</h2>
+
+    <label for="interval">Slide interval (seconds)</label>
+    <input type="number" id="interval" min="1" max="300" value="8">
+
+    <label for="transition">Transition style</label>
+    <select id="transition">
+      <option value="fade">Crossfade</option>
+      <option value="cut">Cut (no transition)</option>
+    </select>
+
+    <label for="fit">Image fit</label>
+    <select id="fit">
+      <option value="contain">Contain (show full image)</option>
+      <option value="cover">Cover (fill screen, may crop)</option>
+    </select>
+
+    <label for="showClock">Show clock</label>
+    <select id="showClock">
+      <option value="yes">Yes</option>
+      <option value="no">No</option>
+    </select>
+
+    <label for="shuffle">Shuffle order</label>
+    <select id="shuffle">
+      <option value="no">No</option>
+      <option value="yes">Yes</option>
+    </select>
+
+    <br>
+    <button class="btn" id="saveSettings">Save</button>
+    <button class="btn btn-close" id="closeSettings">Close</button>
+
+    <div class="info">
+      <strong>Tip:</strong> On iPad, use Safari &rarr; Share &rarr; Add to Home Screen
+      to run this in full screen without browser bars.<br><br>
+      Then enable Guided Access (Settings &rarr; Accessibility &rarr; Guided Access)
+      to lock it as a dedicated photo frame.<br><br>
+      Set Auto-Lock to Never (Settings &rarr; Display &amp; Brightness).
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      // --- Config ---
+      var config = {
+        interval: 8,
+        transition: 'fade',
+        fit: 'contain',
+        showClock: true,
+        shuffle: false
+      };
+
+      // Load saved config
+      try {
+        var saved = localStorage.getItem('photoframe_config');
+        if (saved) {
+          var parsed = JSON.parse(saved);
+          for (var key in parsed) {
+            if (parsed.hasOwnProperty(key)) config[key] = parsed[key];
+          }
+        }
+      } catch (e) {}
+
+      // --- Elements ---
+      var slideshow = document.getElementById('slideshow');
+      var loading = document.getElementById('loading');
+      var clockEl = document.getElementById('clock');
+      var settingsPanel = document.getElementById('settings');
+      var settingsToggle = document.getElementById('settingsToggle');
+
+      // --- Settings UI ---
+      function applyConfigToUI() {
+        document.getElementById('interval').value = config.interval;
+        document.getElementById('transition').value = config.transition;
+        document.getElementById('fit').value = config.fit;
+        document.getElementById('showClock').value = config.showClock ? 'yes' : 'no';
+        document.getElementById('shuffle').value = config.shuffle ? 'yes' : 'no';
+      }
+
+      settingsToggle.addEventListener('click', function() {
+        applyConfigToUI();
+        settingsPanel.className = 'settings visible';
+      });
+
+      document.getElementById('closeSettings').addEventListener('click', function() {
+        settingsPanel.className = 'settings';
+      });
+
+      document.getElementById('saveSettings').addEventListener('click', function() {
+        config.interval = parseInt(document.getElementById('interval').value, 10) || 8;
+        config.transition = document.getElementById('transition').value;
+        config.fit = document.getElementById('fit').value;
+        config.showClock = document.getElementById('showClock').value === 'yes';
+        config.shuffle = document.getElementById('shuffle').value === 'yes';
+
+        try {
+          localStorage.setItem('photoframe_config', JSON.stringify(config));
+        } catch (e) {}
+
+        // Apply changes
+        applyFit();
+        applyTransition();
+        updateClockVisibility();
+        restartSlideshow();
+
+        settingsPanel.className = 'settings';
+      });
+
+      // --- Photos ---
+      var photos = [];
+      var currentIndex = -1;
+      var slideA = null;
+      var slideB = null;
+      var timer = null;
+
+      function createSlide() {
+        var div = document.createElement('div');
+        div.className = 'slide';
+        var img = document.createElement('img');
+        img.alt = '';
+        div.appendChild(img);
+        slideshow.appendChild(div);
+        return div;
+      }
+
+      function applyFit() {
+        var imgs = slideshow.querySelectorAll('.slide img');
+        for (var i = 0; i < imgs.length; i++) {
+          imgs[i].style.objectFit = config.fit;
+          imgs[i].style['-webkit-object-fit'] = config.fit;
+        }
+      }
+
+      function applyTransition() {
+        var slides = slideshow.querySelectorAll('.slide');
+        var dur = config.transition === 'cut' ? '0s' : '1.5s';
+        for (var i = 0; i < slides.length; i++) {
+          slides[i].style['-webkit-transition'] = 'opacity ' + dur + ' ease-in-out';
+          slides[i].style.transition = 'opacity ' + dur + ' ease-in-out';
+        }
+      }
+
+      function shuffleArray(arr) {
+        var a = arr.slice();
+        for (var i = a.length - 1; i > 0; i--) {
+          var j = Math.floor(Math.random() * (i + 1));
+          var tmp = a[i];
+          a[i] = a[j];
+          a[j] = tmp;
+        }
+        return a;
+      }
+
+      function showNext() {
+        if (photos.length === 0) return;
+
+        currentIndex = (currentIndex + 1) % photos.length;
+
+        // Swap active slide
+        var incoming, outgoing;
+        if (slideA.className.indexOf('active') !== -1) {
+          outgoing = slideA;
+          incoming = slideB;
+        } else {
+          outgoing = slideB;
+          incoming = slideA;
+        }
+
+        var img = incoming.querySelector('img');
+        img.src = photos[currentIndex];
+        img.style.objectFit = config.fit;
+
+        // Small delay to allow image to load before transition
+        setTimeout(function() {
+          incoming.className = 'slide active';
+          outgoing.className = 'slide';
+        }, 50);
+      }
+
+      function restartSlideshow() {
+        if (timer) clearInterval(timer);
+        if (config.shuffle) {
+          photos = shuffleArray(photos);
+        }
+        currentIndex = -1;
+        showNext();
+        timer = setInterval(showNext, config.interval * 1000);
+      }
+
+      // --- Clock ---
+      function updateClock() {
+        if (!config.showClock) return;
+        var now = new Date();
+        var h = now.getHours();
+        var m = now.getMinutes();
+        clockEl.textContent = (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+      }
+
+      function updateClockVisibility() {
+        clockEl.style.display = config.showClock ? 'block' : 'none';
+      }
+
+      // --- Fetch images from server ---
+      function loadPhotos() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/photos', true);
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === 4) {
+            if (xhr.status === 200) {
+              try {
+                photos = JSON.parse(xhr.responseText);
+              } catch (e) {
+                photos = [];
+              }
+
+              if (photos.length === 0) {
+                loading.textContent = 'No photos found. Add images to the photos/ folder.';
+                return;
+              }
+
+              if (config.shuffle) {
+                photos = shuffleArray(photos);
+              }
+
+              loading.style.display = 'none';
+
+              // Create two slide elements for crossfade
+              slideA = createSlide();
+              slideB = createSlide();
+              applyFit();
+              applyTransition();
+
+              // Start
+              showNext();
+              timer = setInterval(showNext, config.interval * 1000);
+            } else {
+              loading.textContent = 'Error loading photos.';
+            }
+          }
+        };
+        xhr.send();
+      }
+
+      // --- Prevent all scrolling/bounce ---
+      document.addEventListener('touchmove', function(e) {
+        if (!settingsPanel.className.match(/visible/)) {
+          e.preventDefault();
+        }
+      }, { passive: false });
+
+      document.addEventListener('gesturestart', function(e) {
+        e.preventDefault();
+      });
+
+      document.addEventListener('gesturechange', function(e) {
+        e.preventDefault();
+      });
+
+      // --- Navigation helpers ---
+      var feedbackLeft = document.getElementById('feedbackLeft');
+      var feedbackRight = document.getElementById('feedbackRight');
+      var feedbackTimer = null;
+
+      function showFeedback(el) {
+        if (feedbackTimer) clearTimeout(feedbackTimer);
+        feedbackLeft.className = 'tap-feedback left';
+        feedbackRight.className = 'tap-feedback right';
+        // Force reflow so the transition works even if re-triggered quickly
+        void el.offsetWidth;
+        el.className = el.className + ' show';
+        feedbackTimer = setTimeout(function() {
+          el.className = el.className.replace(' show', '');
+        }, 600);
+      }
+
+      function showPrev() {
+        if (photos.length === 0) return;
+        currentIndex = currentIndex - 2;
+        if (currentIndex < -1) currentIndex = photos.length - 2;
+        showNext();
+        if (timer) clearInterval(timer);
+        timer = setInterval(showNext, config.interval * 1000);
+        showFeedback(feedbackLeft);
+      }
+
+      function manualNext() {
+        if (photos.length === 0) return;
+        showNext();
+        if (timer) clearInterval(timer);
+        timer = setInterval(showNext, config.interval * 1000);
+        showFeedback(feedbackRight);
+      }
+
+      // --- Touch: tap zones + swipe ---
+      var touchStartX = 0;
+      var touchStartY = 0;
+      var touchStartTime = 0;
+      var SWIPE_THRESHOLD = 50;
+      var TAP_MOVE_LIMIT = 20;
+      var TAP_TIME_LIMIT = 300;
+
+      document.addEventListener('touchstart', function(e) {
+        if (settingsPanel.className.match(/visible/)) return;
+        var touch = e.touches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+        touchStartTime = Date.now();
+      }, { passive: true });
+
+      document.addEventListener('touchend', function(e) {
+        if (settingsPanel.className.match(/visible/)) return;
+        var touch = e.changedTouches[0];
+        var dx = touch.clientX - touchStartX;
+        var dy = touch.clientY - touchStartY;
+        var dt = Date.now() - touchStartTime;
+        var absDx = Math.abs(dx);
+        var absDy = Math.abs(dy);
+
+        // Swipe detection (longer drag)
+        if (dt < 500 && absDx >= SWIPE_THRESHOLD && absDx > absDy) {
+          if (dx < 0) {
+            manualNext();
+          } else {
+            showPrev();
+          }
+          return;
+        }
+
+        // Tap detection (short, small movement)
+        if (dt < TAP_TIME_LIMIT && absDx < TAP_MOVE_LIMIT && absDy < TAP_MOVE_LIMIT) {
+          var screenW = window.innerWidth || document.documentElement.clientWidth;
+          if (touchStartX < screenW / 2) {
+            showPrev();
+          } else {
+            manualNext();
+          }
+        }
+      }, { passive: true });
+
+      // --- Init ---
+      updateClockVisibility();
+      updateClock();
+      setInterval(updateClock, 10000);
+      loadPhotos();
+    })();
+  </script>
+</body>
+</html>
