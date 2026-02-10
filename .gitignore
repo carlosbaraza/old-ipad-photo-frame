@@ -4,3 +4,6 @@ node_modules/
 # Ignore user photos but keep placeholders
 photos/*
 !photos/placeholder-*.jpg
+
+# Local photos for deployment
+my-photos/
