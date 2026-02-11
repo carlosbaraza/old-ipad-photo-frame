@@ -209,6 +209,7 @@
   </div>
 
   <div class="clock" id="clock"></div>
+  <div id="debug" style="position:absolute;top:5px;left:5px;color:rgba(255,255,255,0.5);font:12px monospace;z-index:10;pointer-events:none;"></div>
 
   <div class="tap-feedback left" id="feedbackLeft"><span class="arrow">&#9664;</span> Previous</div>
   <div class="tap-feedback right" id="feedbackRight">Next <span class="arrow">&#9654;</span></div>
@@ -246,6 +247,12 @@
       <option value="yes">Yes</option>
     </select>
 
+    <label for="debug">Debug overlay</label>
+    <select id="debug_toggle">
+      <option value="no">No</option>
+      <option value="yes">Yes</option>
+    </select>
+
     <br>
     <button class="btn" id="saveSettings">Save</button>
     <button class="btn btn-close" id="closeSettings">Close</button>
@@ -267,7 +274,8 @@
         transition: 'fade',
         fit: 'contain',
         showClock: true,
-        shuffle: false
+        shuffle: false,
+        debug: false
       };
 
       // Load saved config
@@ -295,6 +303,7 @@
         document.getElementById('fit').value = config.fit;
         document.getElementById('showClock').value = config.showClock ? 'yes' : 'no';
         document.getElementById('shuffle').value = config.shuffle ? 'yes' : 'no';
+        document.getElementById('debug_toggle').value = config.debug ? 'yes' : 'no';
       }
 
       settingsToggle.addEventListener('click', function() {
@@ -312,6 +321,7 @@
         config.fit = document.getElementById('fit').value;
         config.showClock = document.getElementById('showClock').value === 'yes';
         config.shuffle = document.getElementById('shuffle').value === 'yes';
+        config.debug = document.getElementById('debug_toggle').value === 'yes';
 
         try {
           localStorage.setItem('photoframe_config', JSON.stringify(config));
@@ -321,17 +331,23 @@
         applyFit();
         applyTransition();
         updateClockVisibility();
+        updateDebugVisibility();
         restartSlideshow();
 
         settingsPanel.className = 'settings';
       });
 
       // --- Photos ---
-      var photos = [];
-      var currentIndex = -1;
+      var photos = [];        // master list from server
+      var playOrder = [];     // current play order (shuffled or sequential)
+      var playIndex = -1;     // position in playOrder
+      var history = [];       // URLs visited in order (for back/forward)
+      var historyPos = -1;    // current position in history
       var slideA = null;
       var slideB = null;
       var timer = null;
+      var PRELOAD_AHEAD = 2;
+      var preloadCache = {};  // url -> Image object
 
       function createSlide() {
         var div = document.createElement('div');
@@ -371,12 +387,103 @@
         return a;
       }
 
-      function showNext() {
-        if (photos.length === 0) return;
+      function buildPlayOrder() {
+        if (config.shuffle) {
+          playOrder = shuffleArray(photos);
+        } else {
+          playOrder = photos.slice();
+        }
+        playIndex = -1;
+      }
 
-        currentIndex = (currentIndex + 1) % photos.length;
+      function pickNextPhoto() {
+        playIndex++;
+        if (playIndex >= playOrder.length) {
+          // Exhausted the deck — reshuffle or restart
+          buildPlayOrder();
+          playIndex = 0;
+        }
+        return playOrder[playIndex];
+      }
 
-        // Swap active slide
+      // --- Preload management ---
+      function preloadUrl(url) {
+        if (preloadCache[url]) return;
+        var img = new Image();
+        img.src = url;
+        preloadCache[url] = img;
+      }
+
+      function updatePreload() {
+        var toPreload = {};
+        var i;
+
+        for (i = 1; i <= PRELOAD_AHEAD; i++) {
+          var aheadPos = historyPos + i;
+          if (aheadPos < history.length) {
+            toPreload[history[aheadPos]] = true;
+          } else {
+            var peekIdx = playIndex + (aheadPos - history.length) + 1;
+            if (peekIdx < playOrder.length) {
+              toPreload[playOrder[peekIdx]] = true;
+            }
+          }
+
+          var behindPos = historyPos - i;
+          if (behindPos >= 0) {
+            toPreload[history[behindPos]] = true;
+          }
+        }
+
+        if (historyPos >= 0 && historyPos < history.length) {
+          toPreload[history[historyPos]] = true;
+        }
+
+        for (var url in toPreload) {
+          if (toPreload.hasOwnProperty(url)) preloadUrl(url);
+        }
+
+        for (var cached in preloadCache) {
+          if (preloadCache.hasOwnProperty(cached) && !toPreload[cached]) {
+            delete preloadCache[cached];
+          }
+        }
+      }
+
+      // --- Navigation ---
+      var debugEl = document.getElementById('debug');
+      var errorCount = 0;
+
+      function updateDebugVisibility() {
+        debugEl.style.display = config.debug ? 'block' : 'none';
+      }
+
+      function updateDebug(url) {
+        if (!config.debug) return;
+        var name = url ? url.split('/').pop() : '?';
+        debugEl.textContent = (historyPos + 1) + '/' + history.length +
+          ' deck:' + (playIndex + 1) + '/' + playOrder.length +
+          ' total:' + photos.length +
+          ' err:' + errorCount +
+          ' ' + decodeURIComponent(name);
+      }
+
+      var loadTimeout = null;
+      var retryCount = 0;
+      var MAX_RETRIES = 3;
+
+      function reportError(url, info) {
+        try {
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/log-error', true);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.send(JSON.stringify({ url: url, attempt: info.attempt || 0, timeout: !!info.timeout, skipped: !!info.skipped }));
+        } catch (e) {}
+      }
+
+      function showPhoto(url) {
+        if (!url) return;
+
         var incoming, outgoing;
         if (slideA.className.indexOf('active') !== -1) {
           outgoing = slideA;
@@ -387,24 +494,99 @@
         }
 
         var img = incoming.querySelector('img');
-        img.src = photos[currentIndex];
         img.style.objectFit = config.fit;
 
-        // Small delay to allow image to load before transition
+        if (loadTimeout) clearTimeout(loadTimeout);
+
+        // Clear the src first to release the previous image memory
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+
+        // Small delay to let the browser free memory before loading next
         setTimeout(function() {
-          incoming.className = 'slide active';
-          outgoing.className = 'slide';
-        }, 50);
+          img.onload = function() {
+            img.onload = null;
+            img.onerror = null;
+            if (loadTimeout) { clearTimeout(loadTimeout); loadTimeout = null; }
+            retryCount = 0;
+            incoming.className = 'slide active';
+            outgoing.className = 'slide';
+            updateDebug(url);
+          };
+          img.onerror = function() {
+            img.onload = null;
+            img.onerror = null;
+            if (loadTimeout) { clearTimeout(loadTimeout); loadTimeout = null; }
+            retryCount++;
+            reportError(url, { attempt: retryCount });
+            if (retryCount <= MAX_RETRIES) {
+              // Wait longer each time: 3s, 5s, 8s — let browser breathe
+              var delay = 2000 + retryCount * 2000;
+              setTimeout(function() { showPhoto(url); }, delay);
+            } else {
+              // Give up on this image, skip to next
+              errorCount++;
+              reportError(url, { attempt: retryCount, skipped: true });
+              retryCount = 0;
+              updateDebug(url);
+              setTimeout(goForward, 3000);
+            }
+          };
+
+          // Timeout: if image hasn't loaded after 20s, treat as error
+          loadTimeout = setTimeout(function() {
+            img.onload = null;
+            img.onerror = null;
+            img.src = '';
+            retryCount++;
+            reportError(url, { attempt: retryCount, timeout: true });
+            if (retryCount <= MAX_RETRIES) {
+              var delay = 2000 + retryCount * 2000;
+              setTimeout(function() { showPhoto(url); }, delay);
+            } else {
+              errorCount++;
+              reportError(url, { attempt: retryCount, skipped: true, timeout: true });
+              retryCount = 0;
+              updateDebug(url);
+              setTimeout(goForward, 3000);
+            }
+          }, 20000);
+
+          img.src = url;
+        }, 100);
+      }
+
+      function goForward() {
+        if (photos.length === 0) return;
+        // If we're not at the end of history, move forward in history
+        if (historyPos < history.length - 1) {
+          historyPos++;
+        } else {
+          // Pick a new photo and append to history
+          var url = pickNextPhoto();
+          history.push(url);
+          historyPos = history.length - 1;
+        }
+        showPhoto(history[historyPos]);
+      }
+
+      function goBack() {
+        if (photos.length === 0) return;
+        if (historyPos > 0) {
+          historyPos--;
+          showPhoto(history[historyPos]);
+        }
       }
 
       function restartSlideshow() {
         if (timer) clearInterval(timer);
-        if (config.shuffle) {
-          photos = shuffleArray(photos);
-        }
-        currentIndex = -1;
-        showNext();
-        timer = setInterval(showNext, config.interval * 1000);
+        history = [];
+        historyPos = -1;
+        preloadCache = {};
+        buildPlayOrder();
+        goForward();
+        timer = setInterval(goForward, config.interval * 1000);
       }
 
       // --- Clock ---
@@ -438,10 +620,6 @@
                 return;
               }
 
-              if (config.shuffle) {
-                photos = shuffleArray(photos);
-              }
-
               loading.style.display = 'none';
 
               // Create two slide elements for crossfade
@@ -451,8 +629,7 @@
               applyTransition();
 
               // Start
-              showNext();
-              timer = setInterval(showNext, config.interval * 1000);
+              restartSlideshow();
             } else {
               loading.textContent = 'Error loading photos.';
             }
@@ -495,19 +672,17 @@
 
       function showPrev() {
         if (photos.length === 0) return;
-        currentIndex = currentIndex - 2;
-        if (currentIndex < -1) currentIndex = photos.length - 2;
-        showNext();
+        goBack();
         if (timer) clearInterval(timer);
-        timer = setInterval(showNext, config.interval * 1000);
+        timer = setInterval(goForward, config.interval * 1000);
         showFeedback(feedbackLeft);
       }
 
       function manualNext() {
         if (photos.length === 0) return;
-        showNext();
+        goForward();
         if (timer) clearInterval(timer);
-        timer = setInterval(showNext, config.interval * 1000);
+        timer = setInterval(goForward, config.interval * 1000);
         showFeedback(feedbackRight);
       }
 
@@ -559,6 +734,7 @@
 
       // --- Init ---
       updateClockVisibility();
+      updateDebugVisibility();
       updateClock();
       setInterval(updateClock, 10000);
       loadPhotos();

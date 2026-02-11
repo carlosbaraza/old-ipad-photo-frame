@@ -28,9 +28,10 @@ function getPhotos() {
         var ext = path.extname(f).toLowerCase();
         return IMAGE_EXTS.indexOf(ext) !== -1;
       })
-      .sort()
+      .sort().reverse()
       .map(function(f) {
-        return '/photos/' + encodeURIComponent(f);
+        var stat = fs.statSync(path.join(PHOTOS_DIR, f));
+        return '/photos/' + encodeURIComponent(f) + '?v=' + stat.mtimeMs.toString(36);
       });
   } catch (e) {
     return [];
@@ -39,10 +40,29 @@ function getPhotos() {
 
 var server = http.createServer(function(req, res) {
   var url = req.url.split('?')[0];
+  if (url.indexOf('/photos/') === 0) {
+    console.log(new Date().toISOString().slice(11,19) + ' ' + req.method + ' ' + decodeURIComponent(url));
+  }
+
+  if (url === '/api/log-error') {
+    var body = '';
+    req.on('data', function(chunk) { body += chunk; });
+    req.on('end', function() {
+      try {
+        var data = JSON.parse(body);
+        console.log('CLIENT_ERROR: url=' + data.url + ' attempt=' + data.attempt + ' timeout=' + data.timeout + ' skipped=' + data.skipped);
+      } catch (e) {
+        console.log('CLIENT_ERROR: ' + body);
+      }
+      res.writeHead(200);
+      res.end('ok');
+    });
+    return;
+  }
 
   if (url === '/api/photos') {
     var photos = getPhotos();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
     res.end(JSON.stringify(photos));
     return;
   }
@@ -58,10 +78,10 @@ var server = http.createServer(function(req, res) {
     var ext = path.extname(photoPath).toLowerCase();
     var contentType = MIME_TYPES[ext] || 'application/octet-stream';
     fs.readFile(photoPath, function(err, data) {
-      if (err) { res.writeHead(404); res.end('Not found'); return; }
+      if (err) { console.log('404: ' + photoPath); res.writeHead(404); res.end('Not found'); return; }
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=86400'
+        'Cache-Control': 'no-cache'
       });
       res.end(data);
     });
@@ -71,7 +91,7 @@ var server = http.createServer(function(req, res) {
   if (url === '/' || url === '/index.html') {
     fs.readFile(path.join(__dirname, 'index.html'), function(err, data) {
       if (err) { res.writeHead(500); res.end('Error'); return; }
-      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
       res.end(data);
     });
     return;
